@@ -1,0 +1,111 @@
+name: iOS Build Baseline
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ios-build:
+    name: Unsigned iOS build baseline
+    # macos-15 is a current stable GitHub-hosted macOS image with Xcode.
+    # Pinning the image family keeps the baseline reproducible while still
+    # allowing GitHub to update its installed Xcode patch versions.
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Record toolchain versions
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/ios-build-logs"
+          {
+            echo "Runner: $RUNNER_OS / $ImageOS"
+            echo "Node: $(node --version 2>&1 || true)"
+            echo "npm: $(npm --version 2>&1 || true)"
+            echo "Ruby: $(ruby --version 2>&1 || true)"
+            echo "CocoaPods: $(pod --version 2>&1 || true)"
+            echo "Xcode:"
+            xcodebuild -version 2>&1 || true
+            echo "Available schemes/workspaces before pod install:"
+            find ios -maxdepth 2 \( -name '*.xcworkspace' -o -name '*.xcodeproj' \) -print
+            echo "Declared iOS deployment targets:"
+            grep -n 'IPHONEOS_DEPLOYMENT_TARGET\|min_ios_version_supported' ios/LxMusicMobile.xcodeproj/project.pbxproj ios/Podfile || true
+            echo "Declared bundle identifiers:"
+            grep -n 'PRODUCT_BUNDLE_IDENTIFIER' ios/LxMusicMobile.xcodeproj/project.pbxproj || true
+          } 2>&1 | tee "$RUNNER_TEMP/ios-build-logs/toolchain.log"
+
+      - name: Set up Node.js from project version file
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install JavaScript dependencies from package-lock.json
+        shell: bash
+        run: |
+          set -o pipefail
+          npm ci --verbose 2>&1 | tee "$RUNNER_TEMP/ios-build-logs/npm-ci.log"
+
+      - name: Record React Native autolinking configuration
+        shell: bash
+        run: |
+          set -o pipefail
+          npx react-native config 2>&1 | tee "$RUNNER_TEMP/ios-build-logs/react-native-config.log"
+
+      - name: Install CocoaPods dependencies
+        shell: bash
+        run: |
+          set -o pipefail
+          cd ios
+          pod install --verbose 2>&1 | tee "$RUNNER_TEMP/ios-build-logs/pod-install.log"
+
+      - name: Build existing iOS scheme without code signing
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace ios/LxMusicMobile.xcworkspace \
+            -scheme LxMusicMobile \
+            -configuration Debug \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee "$RUNNER_TEMP/ios-build-logs/xcodebuild.log"
+
+      - name: Extract build diagnostics (informational only)
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## iOS build diagnostic lines"
+            echo
+            echo 'The complete logs are attached as the `ios-build-logs` artifact.'
+            echo
+            for log in "$RUNNER_TEMP"/ios-build-logs/*.log; do
+              [ -f "$log" ] || continue
+              echo "### $(basename "$log")"
+              echo '```text'
+              grep -nE '(^|[[:space:]])error:|fatal error:|\[!\]|Error:|ERROR:|error:' "$log" || true
+              echo '```'
+              echo
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload complete build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-logs-${{ github.run_id }}
+          path: ${{ runner.temp }}/ios-build-logs/
+          if-no-files-found: error
+          retention-days: 30
