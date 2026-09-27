@@ -48,6 +48,52 @@ jobs:
           set -o pipefail
           cd ios
           pod install --verbose 2>&1 | tee "$RUNNER_TEMP/ios-build-logs/pod-install.log"
+      - name: Verify iOS Release bundle and signing settings (no credentials)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SETTINGS_JSON="$RUNNER_TEMP/ios-build-logs/release-signing-settings.json"
+          xcodebuild \
+            -workspace ios/LxMusicMobile.xcworkspace \
+            -scheme LxMusicMobile \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -showBuildSettings -json > "$SETTINGS_JSON"
+          node - "$SETTINGS_JSON" <<'NODE' | tee "$RUNNER_TEMP/ios-build-logs/release-signing-summary.txt"
+          const fs = require('node:fs')
+          const entries = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
+          const app = entries.find(entry => entry.target === 'LxMusicMobile')
+          if (!app) throw new Error('LxMusicMobile target not present in Xcode build settings')
+          const settings = app.buildSettings
+          const values = {
+            CONFIGURATION: settings.CONFIGURATION,
+            PRODUCT_BUNDLE_IDENTIFIER: settings.PRODUCT_BUNDLE_IDENTIFIER,
+            CODE_SIGN_STYLE: settings.CODE_SIGN_STYLE,
+            DEVELOPMENT_TEAM: settings.DEVELOPMENT_TEAM || '<unset>',
+            CODE_SIGN_IDENTITY: settings.CODE_SIGN_IDENTITY,
+            PROVISIONING_PROFILE_SPECIFIER: settings.PROVISIONING_PROFILE_SPECIFIER || '<unset>',
+          }
+          for (const [key, value] of Object.entries(values)) console.log(`${key} = ${value}`)
+          const expected = {
+            CONFIGURATION: 'Release',
+            PRODUCT_BUNDLE_IDENTIFIER: 'com.lxmusic.mobile',
+            CODE_SIGN_STYLE: 'Automatic',
+            CODE_SIGN_IDENTITY: 'Apple Development',
+          }
+          for (const [key, value] of Object.entries(expected)) {
+            if (values[key] !== value) throw new Error(`${key} expected ${value}, got ${values[key]}`)
+          }
+          if (settings.DEVELOPMENT_TEAM?.trim()) throw new Error('DEVELOPMENT_TEAM must remain unset in this credentials-free phase')
+          if (settings.PROVISIONING_PROFILE_SPECIFIER?.trim()) throw new Error('Provisioning profile must remain unset in this credentials-free phase')
+          NODE
+          {
+            echo '## Release signing configuration check'
+            echo
+            echo 'The Release target configuration is checked without Apple credentials or signing material.'
+            echo
+            cat "$RUNNER_TEMP/ios-build-logs/release-signing-summary.txt"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Build iOS Release product without code signing
         shell: bash
         run: |
