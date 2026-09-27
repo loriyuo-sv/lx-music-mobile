@@ -1,27 +1,19 @@
 name: iOS Build Baseline
-
 on:
   workflow_dispatch:
   push:
-    branches:
-      - "**"
+    branches: ["**"]
   pull_request:
-
 permissions:
   contents: read
-
 jobs:
   ios-build:
-    name: Unsigned iOS build baseline
-    # macos-15 is a current stable GitHub-hosted macOS image with Xcode.
-    # Pinning the image family keeps the baseline reproducible while still
-    # allowing GitHub to update its installed Xcode patch versions.
+    name: Unsigned iOS Release IPA
     runs-on: macos-15
     timeout-minutes: 60
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-
       - name: Record toolchain versions
         shell: bash
         run: |
@@ -32,75 +24,91 @@ jobs:
             echo "npm: $(npm --version 2>&1 || true)"
             echo "Ruby: $(ruby --version 2>&1 || true)"
             echo "CocoaPods: $(pod --version 2>&1 || true)"
-            echo "Xcode:"
             xcodebuild -version 2>&1 || true
-            echo "Available schemes/workspaces before pod install:"
-            find ios -maxdepth 2 \( -name '*.xcworkspace' -o -name '*.xcodeproj' \) -print
-            echo "Declared iOS deployment targets:"
-            grep -n 'IPHONEOS_DEPLOYMENT_TARGET\|min_ios_version_supported' ios/LxMusicMobile.xcodeproj/project.pbxproj ios/Podfile || true
-            echo "Declared bundle identifiers:"
-            grep -n 'PRODUCT_BUNDLE_IDENTIFIER' ios/LxMusicMobile.xcodeproj/project.pbxproj || true
           } 2>&1 | tee "$RUNNER_TEMP/ios-build-logs/toolchain.log"
-
       - name: Set up Node.js from project version file
         uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: package-lock.json
-
-      - name: Install JavaScript dependencies from package-lock.json
+      - name: Install JavaScript dependencies
         shell: bash
         run: |
           set -o pipefail
           npm ci --verbose 2>&1 | tee "$RUNNER_TEMP/ios-build-logs/npm-ci.log"
-
       - name: Record React Native autolinking configuration
         shell: bash
         run: |
           set -o pipefail
           npx react-native config 2>&1 | tee "$RUNNER_TEMP/ios-build-logs/react-native-config.log"
-
       - name: Install CocoaPods dependencies
         shell: bash
         run: |
           set -o pipefail
           cd ios
           pod install --verbose 2>&1 | tee "$RUNNER_TEMP/ios-build-logs/pod-install.log"
-
-      - name: Build existing iOS scheme without code signing
+      - name: Build iOS Release product without code signing
         shell: bash
         run: |
           set -o pipefail
-          xcodebuild \
-            -workspace ios/LxMusicMobile.xcworkspace \
-            -scheme LxMusicMobile \
-            -configuration Debug \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            CODE_SIGNING_ALLOWED=NO \
-            build 2>&1 | tee "$RUNNER_TEMP/ios-build-logs/xcodebuild.log"
-
-      - name: Extract build diagnostics (informational only)
+          xcodebuild -workspace ios/LxMusicMobile.xcworkspace -scheme LxMusicMobile -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build 2>&1 | tee "$RUNNER_TEMP/ios-build-logs/xcodebuild.log"
+      - name: Package and validate unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="$RUNNER_TEMP/ios-build-logs/ipa-package.log"
+          {
+            BUILT_APP="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/LxMusicMobile.app"
+            IPA_DIR="$GITHUB_WORKSPACE/unsigned-ipa-output"
+            PAYLOAD_DIR="$IPA_DIR/Payload"
+            IPA_PATH="$IPA_DIR/LXMusic-unsigned.ipa"
+            test -d "$BUILT_APP" || { echo "Release app product not found: $BUILT_APP"; exit 1; }
+            APP_BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$BUILT_APP/Info.plist")
+            APP_EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$BUILT_APP/Info.plist")
+            test -n "$APP_BUNDLE_ID"
+            test -n "$APP_EXECUTABLE"
+            test -f "$BUILT_APP/$APP_EXECUTABLE" || { echo "App executable missing: $APP_EXECUTABLE"; exit 1; }
+            if [ -d "$BUILT_APP/_CodeSignature" ] || [ -f "$BUILT_APP/embedded.mobileprovision" ]; then
+              echo "Unexpected signature or provisioning profile in app bundle"
+              exit 1
+            fi
+            mkdir -p "$PAYLOAD_DIR"
+            ditto "$BUILT_APP" "$PAYLOAD_DIR/LXMusic.app"
+            ditto -c -k --sequesterRsrc --keepParent "$PAYLOAD_DIR" "$IPA_PATH"
+            /usr/bin/unzip -t "$IPA_PATH"
+            /usr/bin/unzip -Z1 "$IPA_PATH" > "$IPA_DIR/ipa-contents.txt"
+            grep -Fxq 'Payload/LXMusic.app/Info.plist' "$IPA_DIR/ipa-contents.txt"
+            grep -Fxq "Payload/LXMusic.app/$APP_EXECUTABLE" "$IPA_DIR/ipa-contents.txt"
+            if grep -Fq 'Payload/LXMusic.app/embedded.mobileprovision' "$IPA_DIR/ipa-contents.txt" || grep -Fq 'Payload/LXMusic.app/_CodeSignature/' "$IPA_DIR/ipa-contents.txt"; then
+              echo "Unexpected signing material in IPA"
+              exit 1
+            fi
+            echo "IPA: $IPA_PATH"
+            echo "Bundle identifier: $APP_BUNDLE_ID"
+            echo "App executable: $APP_EXECUTABLE"
+            echo "IPA bytes: $(stat -f '%z' "$IPA_PATH")"
+            echo "IPA structure: Payload/LXMusic.app/"
+            echo "Code signing: disabled; no embedded provisioning profile"
+          } 2>&1 | tee "$LOG"
+      - name: Upload unsigned IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-unsigned-ipa-${{ github.run_id }}
+          path: unsigned-ipa-output/LXMusic-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
+      - name: Extract build diagnostics
         if: always()
         shell: bash
         run: |
           {
-            echo "## iOS build diagnostic lines"
-            echo
-            echo 'The complete logs are attached as the `ios-build-logs` artifact.'
-            echo
             for log in "$RUNNER_TEMP"/ios-build-logs/*.log; do
               [ -f "$log" ] || continue
               echo "### $(basename "$log")"
-              echo '```text'
-              grep -nE '(^|[[:space:]])error:|fatal error:|\[!\]|Error:|ERROR:|error:' "$log" || true
-              echo '```'
-              echo
+              grep -nE 'error:|fatal error:|ERROR:' "$log" || true
             done
           } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Upload complete build logs
         if: always()
         uses: actions/upload-artifact@v4
