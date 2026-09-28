@@ -85,14 +85,32 @@ Local validation before the macOS run:
   `JAVA_HOME` nor `java` is configured. This is an environment prerequisite,
   not an Android source failure; the macOS CI run remains the authoritative
   build verification.
-- `pod install`: pending GitHub Actions macOS run.
-- iOS Release `xcodebuild`: pending GitHub Actions macOS run.
+- GitHub Actions Run #5: completed successfully on `macos-15` for commit
+  `18e2a355e2f09b4fae47e9888630058efea951dd`.
+- `pod install`: succeeded (4m 6s).
+- iOS Release `xcodebuild`: succeeded (8m 28s) with
+  `CODE_SIGNING_ALLOWED=NO`, `CODE_SIGNING_REQUIRED=NO`, and an empty
+  `CODE_SIGN_IDENTITY`. The target is `LxMusicMobile`, configuration is
+  `Release`, and the Bundle ID is `com.lxmusic.mobile`.
+- IPA validation: succeeded. The workflow verifies the built executable,
+  `Payload/LXMusic.app/Info.plist`, and the absence of `_CodeSignature` and
+  `embedded.mobileprovision` before uploading.
+
+The sole job annotation is GitHub's runner warning that several actions still
+target the deprecated Node.js 20 runtime and are forced to Node.js 24. It is
+not an application, CocoaPods, or Xcode compilation error.
 
 ## 9. IPA result
 
-Pending GitHub Actions. A new unsigned IPA is generated only after the iOS
-Release build passes, and is then validated for `Payload/LXMusic.app` before
-upload.
+A new unsigned IPA was generated and uploaded after the Release build passed:
+
+- GitHub Actions run: `36446162039`
+- Artifact: `ios-unsigned-ipa-36446162039`
+- Artifact size: 9.73 MB
+- Artifact SHA-256: `98919af58d6d407f6b736db1cf3e1921d64982d28eddda62efb4aeac0b774e79`
+- Structure verified by the workflow: `Payload/LXMusic.app/`
+- Signing state: unsigned; no embedded provisioning profile or code signature
+- Build logs artifact: `ios-build-logs-36446162039` (689 KB)
 
 ## 10. Next real-device checks
 
