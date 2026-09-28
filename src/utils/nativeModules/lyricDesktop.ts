@@ -218,6 +218,7 @@ export const openOverlayPermissionActivity = async(): Promise<void> => {
 }
 
 export const onPositionChange = (handler: (position: { x: number, y: number }) => void): () => void => {
+  if (!LyricModule) return () => {}
   // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
   const eventEmitter = new NativeEventEmitter(LyricModule)
   const eventListener = eventEmitter.addListener('set-position', event => {
@@ -230,6 +231,7 @@ export const onPositionChange = (handler: (position: { x: number, y: number }) =
 }
 
 export const onLyricLinePlay = (handler: (lineInfo: { text: string, extendedLyrics: string[] }) => void): () => void => {
+  if (!LyricModule) return () => {}
   // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
   const eventEmitter = new NativeEventEmitter(LyricModule)
   const eventListener = eventEmitter.addListener('lyric-line-play', event => {
